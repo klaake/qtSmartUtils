@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import *
 from PyQt6.QtCore import *
 from PyQt6.QtGui import *
 from collections import defaultdict
-
+from functools import partial
 
 # This is an abstract class.  It helps keep all the classes that 
 #  inherit from it consistent by enforcing they have certain functions.  You can 
@@ -28,7 +28,27 @@ class guiInput(ABC):
     def get_object(self):
         pass
     
+class booleanInput(guiInput):
+    def __init__(self, label:str, init_value:bool=False):
+        self.label = label
+        self.object = QCheckBox()
+        self.object.setChecked(init_value)
 
+    def get_label(self):
+        return self.label
+    def get_value(self):
+        return self.object.isChecked()
+    def get_object(self):
+        return self.object
+    def set_size(self, size:int):
+        pass
+    def set_value(self, value:bool):
+        self.object.setChecked(value)
+    def onSelectConditional(self, selection, actionProc=None):
+        pass
+    def onBoolConditional(self, actionProc=None):
+        pass
+    
 class intSpinInput(guiInput):
     def __init__(self, label:str, init_value:int=0, min:int=0, max:int=100, increment:int=1):
         self.label = label
@@ -152,7 +172,7 @@ class radioInput(guiInput):
                 self.button_group.addButton(button)
                 self.layout.addWidget(button)
         
-        self.layout.addWidget(self.groupbox)
+        #self.layout.addWidget(self.groupbox)
 
         if default_selection is not None:
             button = self.buttons_by_name[default_selection]
@@ -361,6 +381,7 @@ def main():
                  [textLineInput("Input #4"), textLineInput("Input #5")],
                  [optionInput("Great Options", myOptions, "DefaultOption")],
                  [radioInput("One Or The Other", myRadioOptions, "Dont Do it")],
+                 [booleanInput("Want This?"), booleanInput("How About This?")],
                  [groupBox("Number Stuff")],
                  [intSpinInput("Integer Number",13, -10, 100, 1)],
                  [groupBox("Calendar Stuff")],
@@ -383,6 +404,8 @@ def main():
         print(f"Value of Input #5 is: {dialog.output['Input #5']}")
         print(f"Value of Great Options is: {dialog.output['Great Options']}")
         print(f"Value of One Or The Other is: {dialog.output['One Or The Other']}")
+        print(f"Value of Want This: {dialog.output['Want This?']}")
+        print(f"Value of How About This: {dialog.output['How About This?']}")
         print(f"Value of Integer Number {dialog.output['Integer Number']}")
         print(f"Value of Due Date {dialog.output['Due Date'].toString('yyyy-MM-dd')}")
         print(f"Value of Important File {dialog.output['Important File']}")
