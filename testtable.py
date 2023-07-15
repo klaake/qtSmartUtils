@@ -2,11 +2,12 @@
 "export" "DIR=$(dirname $0)"
 "exec" "$DIR/venv/bin/python3" "$0" "$@"
 
-import typing
-from PyQt6.QtCore import QObject, Qt, QAbstractTableModel, QSortFilterProxyModel, QPoint
+import re as re
+from PyQt6.QtCore import QObject, Qt, QAbstractTableModel, QSortFilterProxyModel, QPoint,QTimer,QModelIndex
 from PyQt6.QtWidgets import QApplication, QMainWindow, QTableView, QHeaderView, QLineEdit
+from functools import partial
 
-
+# Override the default header in a table so that I can add filter boxes below the columns.
 class SmartHeader(QHeaderView):
     def __init__(self, headers, parent):
         super().__init__(Qt.Orientation.Horizontal,parent)
@@ -17,8 +18,8 @@ class SmartHeader(QHeaderView):
         self.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.setStretchLastSection(True)
 
-
         # This helps move the filter boxes back toward the header to eliminate space.
+        # Looks like I might not need anything, but keep them here anyway just in case.
         self.heightOffset = 0
         # This is the space between the header and the box we're making, in px
         self._padding = 0
@@ -33,6 +34,8 @@ class SmartHeader(QHeaderView):
             self.filter_boxes.append(new_box)
 
         self.alignFilterBoxes()
+        # This signal/slot will resize the filter boxes when the column width changes.
+        self.sectionResized.connect(self.updateGeometries)
 
     def sizeHint(self):
         # Take the current size and add in the padding / size of the boxes.
@@ -65,18 +68,18 @@ class SmartHeader(QHeaderView):
         # Now that I have the total widtth of the header, go through each column and get it's width, then place it.
         for pos, filter_box in enumerate(self.filter_boxes):
             box_height = filter_box.sizeHint().height()
-            print(f"Position = {pos}")
-            print(f"Box Height = {box_height}")
-            print(f"Section Position = {self.sectionPosition(pos)}")
-            print(f"Offset = {self.offset()}")
-            print(f"Total Header Width = {total_header_width}")
-            print(f"Height Offset = {self.heightOffset}")
-            print(f"Padding/2 = {self._padding/2}")
-            print(f"\n")
+            #print(f"Position = {pos}")
+            #print(f"Box Height = {box_height}")
+            #print(f"Section Position = {self.sectionPosition(pos)}")
+            #print(f"Offset = {self.offset()}")
+            #print(f"Total Header Width = {total_header_width}")
+            #print(f"Height Offset = {self.heightOffset}")
+            #print(f"Padding/2 = {self._padding/2}")
+            #print(f"\n")
             move_to = QPoint(self.sectionPosition(pos) - self.offset() + 2 + total_header_width,
                             box_height + self.heightOffset + (int(self._padding/2)))
             
-            print(f"MoveTo:  {move_to.x()}, {move_to.y()}")
+            #print(f"MoveTo:  {move_to.x()}, {move_to.y()}")
             filter_box.move(move_to)
             filter_box.resize(self.sectionSize(pos), box_height)
                 
@@ -85,37 +88,152 @@ class SmartFilterProxy(QSortFilterProxyModel):
     def __init__(self, parent=None):
         super().__init__(parent)
 
+    def connectTextToFilter(self, table_header):
+        # Store the table header
+        self.table_header = table_header
+
+        for filter_box in table_header.filter_boxes:
+            # Make a timer that will delay doing anything for a small amount of time so the user can type
+            #   their filter w/o it trying to update constantly
+            filter_delay_timer = QTimer()
+            filter_delay_timer.setSingleShot(True)
+            filter_delay_timer.setInterval(750)
+
+            # Store the timer in the filter text box so I can cross-assosiate them
+            filter_box.delay_timer = filter_delay_timer
+
+            # 'regex' is where I'll store a modified version of the text entered.
+            # For example, I might want to find [ or ] and delimit them 
+            filter_box.regex = ""
+
+            # In the text change slot, look for a signal that the filter has been updated, then call the timer.
+            filter_box.textChanged.connect(partial(self.filterDelay, filter_box))
+            filter_delay_timer.timeout.connect(partial(self.filterDelayTimeout, filter_box))
+    
+    def filterDelay(self, filter_box):
+        filter_box.delay_timer.start()
+
+    def filterDelayTimeout(self, filter_box):
+        text = filter_box.text()
+        text = text.replace('[', '\[')
+        text = text.replace(']', '\]')
+        filter_box.regex = text
+        #print("Filter Timeout!!")
+        #print(f" Filter Text = '{filter_box.text()}'")
+        #print(f" Regex Text  = '{filter_box.regex}'")
+        self.applyFilters()
+
+    def applyFilters(self):
+        # Get my parent model
+        parent_table_model = self.sourceModel()
+
+        # Get the original data from the source model
+        original_data = parent_table_model.original_data
+
+        # This will store the filtered results
+        filtered_data = []
+
+        # Get the filter boxes
+        filter_boxes = self.table_header.filter_boxes
+
+        # Iterate over each row in the original dataset and try to determine if the filter matches.
+        for row_data in original_data:
+            row_matched = True
+            # Now iterate over the filter boxes and see if they match..
+            for pos, box in enumerate(filter_boxes):
+                # Check if the filter is a pattern I want to skip
+                if self.skipRegex(box.regex): continue
+                # Regex pattern is good.  Try to apply it to the column data.
+                if self.filterMatched(box.regex, row_data[pos]) is False:
+                    row_matched = False
+                    break
+            # If all the patterns match, then keep the data around...
+            if row_matched is True:
+                filtered_data.append(row_data)
+        
+        # I now have a new list of data that's been filtered.  Update the table model 
+        #  with the new filtered data
+        print(filtered_data)
+        parent_table_model._data = filtered_data
+                
+        # Tell the table model to update the view
+        parent_table_model.updateView()
+
+    def filterMatched(self, regex, colText):
+        if re.search(regex, str(colText)):
+          return True
+        else:
+          return False
+
+    def skipRegex(self, pattern):
+        # These are some patterns we want to skip
+        if pattern == "": return True
+        if pattern == "!": return True
+        if pattern == "=": return True
+        if pattern == "==": return True
+        if pattern == ">": return True
+        if pattern == "<": return True
+        if pattern == "<=": return True
+        if pattern == ">=": return True
+        if pattern == ">-": return True
+        if pattern == ">-": return True
+        if pattern == ">=-": return True
+        if pattern == ">=-": return True
+        return False
+        
+
+class SmartTableView(QTableView):
+    def __init__(self, parent=None):
+        super().__init__(parent)
 
 class SmartTable():
     def __init__(self, data, headers, parent=None):
 
         # Make a new QTableView
-        self.table_view = QTableView()
+        self.table_view = SmartTableView()
         # make a table model
-        self.table_model = CustomTableModel(data, headers, parent)
+        self.table_model = SmartTableModel(data, headers, parent)
         self.table_view.setModel(self.table_model)
         self.proxy_model = None
         self.filter_header = None
+
+    def enableSorting(self, switch:bool=True):
+        if switch is True:
+            if self.proxy_model is None:
+                self.proxy_model = SmartFilterProxy()
+            self.proxy_model.setSourceModel(self.table_model)
+            self.table_view.setModel(self.proxy_model)
+            self.proxy_model.setSortRole(Qt.ItemDataRole.DisplayRole)
+            self.proxy_model.setDynamicSortFilter(True)
+            self.table_view.setSortingEnabled(True)
+        else:
+            if self.proxy_model is None:
+                return
+            self.proxy_model.setDynamicSortFilter(False)
+            self.table_view.setSortingEnabled(False)
 
     def enableFiltering(self, switch:bool=True):
         if switch is True:
             if self.proxy_model is None:
                 self.proxy_model = SmartFilterProxy()
-                self.proxy_model.setSourceModel(self.table_model)
-                self.table_view.setModel(self.proxy_model)
-                self.filter_header = SmartHeader(headers=headers, parent=self.table_view)
-                self.table_view.setHorizontalHeader(self.filter_header)
-                self.filter_header.alignFilterBoxes()
-    
+
+            self.proxy_model.setSourceModel(self.table_model)
+            self.table_view.setModel(self.proxy_model)
+            self.filter_header = SmartHeader(headers=headers, parent=self.table_view)
+            self.table_view.setHorizontalHeader(self.filter_header)
+            self.filter_header.alignFilterBoxes()
+            self.proxy_model.connectTextToFilter(self.filter_header)
+
     def getWidget(self):
         return self.table_view
     
-class CustomTableModel(QAbstractTableModel):
+class SmartTableModel(QAbstractTableModel):
     def __init__(self, data, headers, parent=None):
         super().__init__(parent)
         self._data = data
         self._headers = headers
         self.original_data = data
+        self.view_size = len(data)
 
     def rowCount(self, parent=None):
         return len(self._data)
@@ -141,6 +259,30 @@ class CustomTableModel(QAbstractTableModel):
 
         return None
 
+    def updateView(self):
+        # Get the new length of the data
+        new_view_size = len(self._data)
+
+        # By how much as the row size changed
+        new_row_difference = new_view_size - self.view_size
+
+        # If rows have been removed, handle it here
+        if new_row_difference < 0:
+            first_row_to_remove = self.view_size - abs(new_row_difference)
+            last_row_to_remove =  self.view_size - 1
+            self.beginRemoveRows(QModelIndex(), first_row_to_remove, last_row_to_remove)
+            self.endRemoveRows()
+            self.view_size = new_view_size
+        elif new_row_difference > 0:
+            first_row_to_add = self.view_size
+            last_row_to_add =  self.view_size + new_row_difference - 1
+            #print(f"adding: {first_row_to_add} to {last_row_to_add}")
+            self.beginInsertRows(QModelIndex(), first_row_to_add, last_row_to_add)
+            self.endInsertRows()
+            self.view_size = new_view_size
+        else:
+            return
+
 app = QApplication([])
 
 data = [
@@ -155,6 +297,7 @@ headers = ['First Name', 'Last Name', 'Email']
 main_window = QMainWindow()
 my_table = SmartTable(data=data, headers=headers, parent=main_window)
 my_table.enableFiltering(True)
+my_table.enableSorting(True)
 main_window.setCentralWidget(my_table.getWidget())
 main_window.resize(400, 300)
 main_window.show()
