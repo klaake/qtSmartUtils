@@ -84,9 +84,17 @@ class SmartHeader(QHeaderView):
             filter_box.resize(self.sectionSize(pos), box_height)
                 
             
+# I'm only really using the QSortFilterProxyModel for their sort function.  I do my own thing for filtering, but I store all 
+#   of that in this class anyway.
 class SmartFilterProxy(QSortFilterProxyModel):
+
     def __init__(self, parent=None):
         super().__init__(parent)
+
+        # Define some special regex
+        self.is_math = re.compile("^\s*(>|<|=)(\=*)\s*(.+)$")
+        self.is_and = re.compile("^.+\&\&")
+        self.is_or = re.compile("^.+\|\|")
 
     def connectTextToFilter(self, table_header):
         # Store the table header
@@ -110,17 +118,19 @@ class SmartFilterProxy(QSortFilterProxyModel):
             filter_box.textChanged.connect(partial(self.filterDelay, filter_box))
             filter_delay_timer.timeout.connect(partial(self.filterDelayTimeout, filter_box))
     
+    # This function starts the delay timer on the filter box
     def filterDelay(self, filter_box):
         filter_box.delay_timer.start()
 
+    # This function is called when the timer hits timeout.  At this point, 
+    # we can apply the filters
     def filterDelayTimeout(self, filter_box):
         text = filter_box.text()
+        # Delimit some special characters...
+        #   TODO: Might want to make this a special option later...
         text = text.replace('[', '\[')
         text = text.replace(']', '\]')
         filter_box.regex = text
-        #print("Filter Timeout!!")
-        #print(f" Filter Text = '{filter_box.text()}'")
-        #print(f" Regex Text  = '{filter_box.regex}'")
         self.applyFilters()
 
     def applyFilters(self):
@@ -159,8 +169,65 @@ class SmartFilterProxy(QSortFilterProxyModel):
         # Tell the table model to update the view
         parent_table_model.updateView()
 
-    def filterMatched(self, regex, colText):
-        if re.search(regex, str(colText)):
+    # This is where we try to apply the filter to the actual text in the box...
+    def filterMatched(self, regex, column_value):
+
+        # First, check and see if the regex has an and/or in it.  If so, split it up and 
+        # perform the checks seperately
+        if self.is_and.match(regex):
+            # Split the regex by the and and call seperately
+            for sub_regex in regex.split('&&'):
+                # If any of the "AND" values return false then we don't match...
+                if self.filterMatched(sub_regex, column_value) is False:
+                    return False
+            # If I'm here, all the sub_regex AND stuff matched, so return true
+            return True
+
+        # Now check the OR condition.  If any of the segments match, then return true
+        if self.is_or.match(regex):
+            # Split the regex by the and and call seperately
+            for sub_regex in regex.split('||'):
+                # If any of the "OR" values return true then we DO match...
+                if self.filterMatched(sub_regex, column_value) is True:
+                    return True
+            # If I'm here, all the sub_regex OR stuff DIDN'T matched, so return false
+            return False
+
+            
+        # Check for math regex.  If it's math, we have to do some special stuff.
+        math_search_results = self.is_math.search(regex)
+        print(math_search_results)
+        if math_search_results:
+            # get the pieces of the math puzzle
+            operator = math_search_results.groups()[0]
+            is_equal = math_search_results.groups()[1]
+            value = math_search_results.groups()[2]
+            # Try to convert the value (which is a string) into a number that I can do
+            # a math operation on...
+            try:
+                regex_number = float(value)
+                column_number = float(column_value)
+            except:
+                # If I'm here, the user tried to do a numerical operation on a non-number OR the col value isn't.  
+                # That doens't match...
+                return False
+            
+            # Go through all the math conditions and see if they match...
+            if operator == '=' and is_equal == '=':
+                return True if (column_number == regex_number) else False
+            if operator == '>' and is_equal == '=':
+                return True if (column_number >= regex_number) else False
+            if operator == '<' and is_equal == '=':
+                return True if (column_number <= regex_number) else False
+            if operator == '>' and is_equal == '':
+                return True if (column_number > regex_number) else False
+            if operator == '<' and is_equal == '':
+                return True if (column_number < regex_number) else False
+
+            # If I'm here, then it seems like none of my math regex worked.  Should return False
+            return False
+            
+        if re.search(regex, str(column_value)):
           return True
         else:
           return False
@@ -286,13 +353,13 @@ class SmartTableModel(QAbstractTableModel):
 app = QApplication([])
 
 data = [
-    ['John', 'Doe', 'john.doe@example.com'],
-    ['Jane', 'Smith', 'jane.smith@example.com'],
-    ['Michael', 'Johnson', 'michael.johnson@example.com'],
+    ['John', 'Doe', 'john.doe@example.com', "30"],
+    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
+    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
     # ...
 ]
 
-headers = ['First Name', 'Last Name', 'Email']
+headers = ['First Name', 'Last Name', 'Email', "Age"]
 
 main_window = QMainWindow()
 my_table = SmartTable(data=data, headers=headers, parent=main_window)
