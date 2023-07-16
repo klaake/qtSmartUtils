@@ -3,9 +3,13 @@
 "exec" "$DIR/venv/bin/python3" "$0" "$@"
 
 import re as re
+import typing
+from PyQt6 import QtCore
 from PyQt6.QtCore import QObject, Qt, QAbstractTableModel, QSortFilterProxyModel, QPoint,QTimer,QModelIndex
-from PyQt6.QtWidgets import QApplication, QMainWindow, QTableView, QHeaderView, QLineEdit
+from PyQt6.QtWidgets import QApplication, QMainWindow, QStyleOptionViewItem, QTableView, QHeaderView, QLineEdit, QItemDelegate, QWidget
+from PyQt6.QtGui import QColor
 from functools import partial
+from collections import UserList, defaultdict
 
 # Override the default header in a table so that I can add filter boxes below the columns.
 class SmartHeader(QHeaderView):
@@ -17,6 +21,9 @@ class SmartHeader(QHeaderView):
         self.setSectionsClickable(True)
         self.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.setStretchLastSection(True)
+
+        # Make sure when the scroll bar moves the table, it also moves the filter boxes.
+        parent.horizontalScrollBar().valueChanged.connect(self.alignFilterBoxes)
 
         # This helps move the filter boxes back toward the header to eliminate space.
         # Looks like I might not need anything, but keep them here anyway just in case.
@@ -141,7 +148,7 @@ class SmartFilterProxy(QSortFilterProxyModel):
         original_data = parent_table_model.original_data
 
         # This will store the filtered results
-        filtered_data = []
+        filtered_data = SmartRow()
 
         # Get the filter boxes
         filter_boxes = self.table_header.filter_boxes
@@ -163,7 +170,7 @@ class SmartFilterProxy(QSortFilterProxyModel):
         
         # I now have a new list of data that's been filtered.  Update the table model 
         #  with the new filtered data
-        print(filtered_data)
+        #print(filtered_data)
         parent_table_model._data = filtered_data
                 
         # Tell the table model to update the view
@@ -196,7 +203,7 @@ class SmartFilterProxy(QSortFilterProxyModel):
             
         # Check for math regex.  If it's math, we have to do some special stuff.
         math_search_results = self.is_math.search(regex)
-        print(math_search_results)
+        #print(math_search_results)
         if math_search_results:
             # get the pieces of the math puzzle
             operator = math_search_results.groups()[0]
@@ -251,7 +258,15 @@ class SmartFilterProxy(QSortFilterProxyModel):
 
 class SmartTableView(QTableView):
     def __init__(self, parent=None):
+        self.size_to_data = False
         super().__init__(parent)
+        
+    def resizeToData(self, min_size=500, max_size=5000):
+        if self.size_to_data is True:
+            self.horizontalHeader().setMaximumSectionSize(min_size)
+            self.resizeColumnsToContents()
+            self.resizeRowsToContents()
+            self.horizontalHeader().setMaximumSectionSize(max_size)
 
 class SmartTable():
     def __init__(self, data, headers, parent=None):
@@ -290,17 +305,50 @@ class SmartTable():
             self.table_view.setHorizontalHeader(self.filter_header)
             self.filter_header.alignFilterBoxes()
             self.proxy_model.connectTextToFilter(self.filter_header)
+    
+    def enableEdit(self, column_name:str=None):
+        if column_name is None:
+            for col,name in enumerate(self.table_model._headers):
+                self.table_model.editable_columns[col] = True
+                edit_box = textEditDelegate(self.table_view)
+                self.table_view.setItemDelegateForColumn(col, edit_box)
+        else:
+            if column_name in self.table_model._headers:
+                column_index = self.table_model._headers.index(column_name)
+                self.table_model.editable_columns[column_index] = True
+                edit_box = textEditDelegate(self.table_view)
+                self.table_view.setItemDelegateForColumn(column_index, edit_box)
 
     def getWidget(self):
         return self.table_view
     
+    def enableSizeToData(self, switch=True):
+        if switch is True:
+            self.table_view.size_to_data = True
+            self.table_view.resizeToData()
+        else:
+            self.table_view.size_to_data = False
+        
+
+class textEditDelegate(QItemDelegate):
+    def __init__(self, parent=None):
+        QItemDelegate.__init__(self, parent)
+    def createEditor(self, parent, option, index):
+        return QLineEdit(parent)
+    def setEditorData(self, editor: QWidget, index: QModelIndex) -> None:
+        return super().setEditorData(editor, index)
+    def setModelData(self, editor: QWidget, model: QAbstractTableModel, index: QModelIndex) -> None:
+        text_box_value = editor.text()
+        model.setData(index, text_box_value, Qt.ItemDataRole.EditRole)
+    
 class SmartTableModel(QAbstractTableModel):
     def __init__(self, data, headers, parent=None):
         super().__init__(parent)
-        self._data = data
+        self._data = [SmartRow(sublist) for sublist in data]
         self._headers = headers
-        self.original_data = data
-        self.view_size = len(data)
+        self.original_data = self._data
+        self.view_size = len(self._data)
+        self.editable_columns = [False] * len(self._headers)
 
     def rowCount(self, parent=None):
         return len(self._data)
@@ -318,13 +366,40 @@ class SmartTableModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.DisplayRole:
             return str(self._data[row][column])
 
+        if role == Qt.ItemDataRole.BackgroundRole:
+            if self.editable_columns[column] is True:
+                return QColor(Qt.GlobalColor.white)
+            else:
+                return QColor(Qt.GlobalColor.black)
+        if role == Qt.ItemDataRole.ForegroundRole:
+            if self.editable_columns[column] is True:
+                return QColor(Qt.GlobalColor.black)
+            else:
+                return QColor(Qt.GlobalColor.white)
+
         return None
+
+    def setData(self, index, value, role):
+        if role == Qt.ItemDataRole.EditRole:
+            self._data[index.row()][index.column()] = value
+            return True
+
+        return super().setData(index, value, role)
 
     def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
         if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
             return self._headers[section]
 
         return None
+
+    def flags(self, index: QModelIndex):
+        if not index.isValid(): return Qt.ItemFlag.ItemIsEnabled
+        current_column = index.column()
+        if self.editable_columns[current_column] is True:
+            return super().flags(index) | Qt.ItemFlag.ItemIsEditable
+        else:
+            return super().flags(index) | Qt.ItemFlag.ItemIsEnabled
+
 
     def updateView(self):
         # Get the new length of the data
@@ -349,6 +424,29 @@ class SmartTableModel(QAbstractTableModel):
             self.view_size = new_view_size
         else:
             return
+    
+
+class SmartRow(UserList):
+    def __init__(self, data=[]):
+        self.hidden = False
+
+        # Create a shadow list that will store formulas, but not the actual value
+        self.formulas = [None] * len(data)
+
+        # Store a dictionary where the key = a pointer to the SmartTable and the Value is an row in that table.
+        #  this is used if the SmartRow is being used in more than one table.  If I update one, I need to update
+        #  them all.
+        self.table_rows = defaultdict(lambda: None)
+
+        super().__init__(data)
+
+    def __setitem__(self, index, value):
+        #print(f"Setting Value {value} at index {index}")
+        super().__setitem__(index, value)
+
+    def append(self, value):
+        self.formulas.append(None)
+        super().append(value)
 
 app = QApplication([])
 
@@ -365,6 +463,9 @@ main_window = QMainWindow()
 my_table = SmartTable(data=data, headers=headers, parent=main_window)
 my_table.enableFiltering(True)
 my_table.enableSorting(True)
+#my_table.enableEdit()
+my_table.enableEdit("Age")
+my_table.enableSizeToData()
 main_window.setCentralWidget(my_table.getWidget())
 main_window.resize(400, 300)
 main_window.show()
