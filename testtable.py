@@ -3,10 +3,8 @@
 "exec" "$DIR/venv/bin/python3" "$0" "$@"
 
 import re as re
-import typing
-from PyQt6 import QtCore
-from PyQt6.QtCore import QObject, Qt, QAbstractTableModel, QSortFilterProxyModel, QPoint,QTimer,QModelIndex
-from PyQt6.QtWidgets import QApplication, QMainWindow, QStyleOptionViewItem, QTableView, QHeaderView, QLineEdit, QItemDelegate, QWidget
+from PyQt6.QtCore import Qt, QAbstractTableModel, QSortFilterProxyModel, QPoint,QTimer,QModelIndex
+from PyQt6.QtWidgets import QApplication, QMainWindow, QTableView, QHeaderView, QLineEdit, QItemDelegate, QWidget
 from PyQt6.QtGui import QColor
 from functools import partial
 from collections import UserList, defaultdict
@@ -171,7 +169,7 @@ class SmartFilterProxy(QSortFilterProxyModel):
         # I now have a new list of data that's been filtered.  Update the table model 
         #  with the new filtered data
         #print(filtered_data)
-        parent_table_model._data = filtered_data
+        parent_table_model.unpaged_data = filtered_data
                 
         # Tell the table model to update the view
         parent_table_model.updateView()
@@ -255,7 +253,6 @@ class SmartFilterProxy(QSortFilterProxyModel):
         if pattern == ">=-": return True
         return False
         
-
 class SmartTableView(QTableView):
     def __init__(self, parent=None):
         self.size_to_data = False
@@ -269,13 +266,14 @@ class SmartTableView(QTableView):
             self.horizontalHeader().setMaximumSectionSize(max_size)
 
 class SmartTable():
-    def __init__(self, data, headers, parent=None):
+    def __init__(self, data, headers, page_size=1000, parent=None):
 
         # Make a new QTableView
         self.table_view = SmartTableView()
         # make a table model
-        self.table_model = SmartTableModel(data, headers, parent)
+        self.table_model = SmartTableModel(data, headers, page_size=page_size, parent=parent)
         self.table_view.setModel(self.table_model)
+        self.table_model.setTableView(self.table_view)
         self.proxy_model = None
         self.filter_header = None
 
@@ -293,6 +291,12 @@ class SmartTable():
                 return
             self.proxy_model.setDynamicSortFilter(False)
             self.table_view.setSortingEnabled(False)
+
+    # Override the default display rules...
+    def setBackgroundRoleFunction(self, function):
+        self.table_model.background_role_function = function
+    def setForegroundRoleFunction(self, function):
+        self.table_model.foreground_role_function = function
 
     def enableFiltering(self, switch:bool=True):
         if switch is True:
@@ -342,19 +346,38 @@ class textEditDelegate(QItemDelegate):
         model.setData(index, text_box_value, Qt.ItemDataRole.EditRole)
     
 class SmartTableModel(QAbstractTableModel):
-    def __init__(self, data, headers, parent=None):
+    def __init__(self, data, headers, page_size=100, parent=None):
         super().__init__(parent)
         self._data = [SmartRow(sublist) for sublist in data]
+        self.unpaged_data = self._data
         self._headers = headers
         self.original_data = self._data
-        self.view_size = len(self._data)
         self.editable_columns = [False] * len(self._headers)
+        self.table_view = None
+
+        # Set the page size and the initial size of the first page load.
+        self.page_size = page_size
+        if page_size < len(self._data):
+            self.display_size = page_size
+        else:
+            self.display_size = len(self._data)
+
+        # Override functions for different display roles...
+        self.background_role_function = None
+        self.foreground_role_function = None
+        
+        # Prune the data to the page size
+        self._data = self.original_data[0:page_size]
+        self.view_size = len(self._data)
 
     def rowCount(self, parent=None):
         return len(self._data)
 
     def columnCount(self, parent=None):
         return len(self._headers)
+
+    def setTableView(self, table_view):
+        self.table_view = table_view
 
     def data(self, index, role=Qt.ItemDataRole.DisplayRole):
         if not index.isValid() or not (0 <= index.row() < self.rowCount()) or not (0 <= index.column() < self.columnCount()):
@@ -367,15 +390,11 @@ class SmartTableModel(QAbstractTableModel):
             return str(self._data[row][column])
 
         if role == Qt.ItemDataRole.BackgroundRole:
-            if self.editable_columns[column] is True:
-                return QColor(Qt.GlobalColor.white)
-            else:
-                return QColor(Qt.GlobalColor.black)
+            if self.background_role_function is not None:
+                return self.background_role_function(index)
         if role == Qt.ItemDataRole.ForegroundRole:
-            if self.editable_columns[column] is True:
-                return QColor(Qt.GlobalColor.black)
-            else:
-                return QColor(Qt.GlobalColor.white)
+            if self.foreground_role_function is not None:
+                return self.foreground_role_function(index)
 
         return None
 
@@ -403,7 +422,11 @@ class SmartTableModel(QAbstractTableModel):
 
     def updateView(self):
         # Get the new length of the data
-        new_view_size = len(self._data)
+        new_view_size = len(self.unpaged_data)
+        if new_view_size > self.page_size:
+            new_view_size = self.page_size
+
+        self._data = self.unpaged_data[0:new_view_size]
 
         # By how much as the row size changed
         new_row_difference = new_view_size - self.view_size
@@ -424,7 +447,38 @@ class SmartTableModel(QAbstractTableModel):
             self.view_size = new_view_size
         else:
             return
+
+    def canFetchMore(self, parent: QModelIndex) -> bool:
+        if len(self._data) < len(self.unpaged_data):
+            return True
+        else:
+            return False
+
+    def fetchMore(self, parent: QModelIndex) -> None:
+        # Calculate how mnay available items there are to fetch
+        unpaged_data_length = len(self.unpaged_data)
+        paged_data_length = len(self._data)
+        available_items = unpaged_data_length - paged_data_length
+        # Don't load more than the page size allows...
+        if available_items > self.page_size:
+            available_items = self.page_size
+        # I shouldn't get something less than 0, but if I do, just return.
+        if available_items <= 0:
+            return
+
+        if available_items + paged_data_length > unpaged_data_length:
+            available_items = unpaged_data_length - paged_data_length
+
+        # Insert the new rows
+        # Add the data from the unpaged data
+        self._data = self.unpaged_data[0:len(self._data)+available_items]
+        self.beginInsertRows(QModelIndex(), paged_data_length, paged_data_length+available_items-1)
+        self.endInsertRows()
+        self.view_size = len(self._data)
     
+    def fitRowsDisplay(self):
+        pass
+
 
 class SmartRow(UserList):
     def __init__(self, data=[]):
@@ -454,20 +508,82 @@ data = [
     ['John', 'Doe', 'john.doe@example.com', "30"],
     ['Jane', 'Smith', 'jane.smith@example.com', "50"],
     ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
+    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
+    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
+    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
+    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
+    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
+    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
+    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
+    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
+    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
+    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
+    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
+    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
+    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
+    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
+    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
+    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
+    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
+    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
+    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
+    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
+    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
+    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
+    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
+    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
+    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
+    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
+    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
+    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
+    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
+    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
+    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
+    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
+    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
+    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
+    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
+    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
+    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
+    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
+    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
+    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
+    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
+    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
+    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
     # ...
 ]
 
 headers = ['First Name', 'Last Name', 'Email', "Age"]
 
+
+def my_background_rule(index):
+    model = index.model()
+    column = index.column()
+    if model.editable_columns[column] is True:
+        return QColor(Qt.GlobalColor.white)
+    else:
+        return QColor(Qt.GlobalColor.black)
+
+def my_foreground_rule(index):
+    model = index.model()
+    column = index.column()
+    if model.editable_columns[column] is True:
+        return QColor(Qt.GlobalColor.black)
+    else:
+        return QColor(Qt.GlobalColor.white)
+
 main_window = QMainWindow()
-my_table = SmartTable(data=data, headers=headers, parent=main_window)
+my_table = SmartTable(data=data, headers=headers, page_size=5, parent=main_window)
 my_table.enableFiltering(True)
 my_table.enableSorting(True)
-#my_table.enableEdit()
-my_table.enableEdit("Age")
+my_table.enableEdit()
+my_table.enableEdit("Email")
 my_table.enableSizeToData()
+my_table.setBackgroundRoleFunction(my_background_rule)
+my_table.setForegroundRoleFunction(my_foreground_rule)
 main_window.setCentralWidget(my_table.getWidget())
-main_window.resize(400, 300)
+main_window.resize(700, 500)
 main_window.show()
 
 app.exec()
