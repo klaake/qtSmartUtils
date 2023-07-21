@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import QApplication, QMainWindow, QTableView, QHeaderView, 
 from PyQt6.QtGui import QColor
 from functools import partial
 from collections import UserList, defaultdict
+import random
 
 # Override the default header in a table so that I can add filter boxes below the columns.
 class SmartHeader(QHeaderView):
@@ -44,12 +45,19 @@ class SmartHeader(QHeaderView):
 
     def sizeHint(self):
         # Take the current size and add in the padding / size of the boxes.
+        # I am overloading this mainly because the filter boxes float on the screen
+        # so they aren't technically part of the header.  So I need to add in their
+        # height plus any padding that I want.
         size = super().sizeHint()
         if self.filter_boxes:
+            # all the filter boxes should be the same, so grab the height of the first one.
             height = self.filter_boxes[0].sizeHint().height()
+            # Add the filter height so the header height
             size.setHeight(size.height() + height + self._padding)
         return size
 
+    # When a section gets resized,  things like my filter boxes don't get resized with it.  
+    # Use this function to update all the positions and geometries when things move.
     def updateGeometries(self):
         try:
             if self.filter_boxes:
@@ -62,6 +70,7 @@ class SmartHeader(QHeaderView):
         except:
             super().updateGeometries()
         
+    # This function places the filter boxes in the correct location.
     def alignFilterBoxes(self):
         total_header_width = 0
         if self.parent() is not None:
@@ -100,6 +109,11 @@ class SmartFilterProxy(QSortFilterProxyModel):
         self.is_math = re.compile("^\s*(>|<|=)(\=*)\s*(.+)$")
         self.is_and = re.compile("^.+\&\&")
         self.is_or = re.compile("^.+\|\|")
+        self.is_not = re.compile("^!(.+)")
+ 
+    # I will have to override this because numeric sorting doesn't really work
+    def sort(self, column: int, order):
+        return super().sort(column, order)
 
     def connectTextToFilter(self, table_header):
         # Store the table header
@@ -152,6 +166,7 @@ class SmartFilterProxy(QSortFilterProxyModel):
         filter_boxes = self.table_header.filter_boxes
 
         # Iterate over each row in the original dataset and try to determine if the filter matches.
+        # This is an n^2 iteration with regex that is probably slow.  Can I make this faster?
         for row_data in original_data:
             row_matched = True
             # Now iterate over the filter boxes and see if they match..
@@ -198,6 +213,12 @@ class SmartFilterProxy(QSortFilterProxyModel):
             # If I'm here, all the sub_regex OR stuff DIDN'T matched, so return false
             return False
 
+        if self.is_not.match(regex):
+            regex = regex.replace('!', "", 1)
+            if self.filterMatched(regex, column_value) is False:
+                return True
+            else:
+                return False
             
         # Check for math regex.  If it's math, we have to do some special stuff.
         math_search_results = self.is_math.search(regex)
@@ -504,57 +525,16 @@ class SmartRow(UserList):
 
 app = QApplication([])
 
-data = [
-    ['John', 'Doe', 'john.doe@example.com', "30"],
-    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
-    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
-    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
-    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
-    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
-    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
-    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
-    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
-    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
-    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
-    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
-    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
-    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
-    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
-    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
-    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
-    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
-    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
-    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
-    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
-    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
-    ['Michael', 'Johnson', 'michael.johnson@example.com', 60],
-    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
-    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
-    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
-    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
-    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
-    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
-    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
-    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
-    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
-    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
-    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
-    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
-    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
-    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
-    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
-    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
-    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
-    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
-    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
-    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
-    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
-    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
-    ['Jane', 'Smith', 'jane.smith@example.com', "50"],
-    # ...
-]
+print("Loading Data...")
+data = []
+for i in range(1,1000000):
+    random1 = random.randrange(-100, 101)
+    random2 = random.randrange(-100, 101)
+    random3 = random.randrange(-100, 101)
+    row_data = [random1, random2, random3]
+    data.append(row_data)
 
-headers = ['First Name', 'Last Name', 'Email', "Age"]
+headers = ['Num1', 'Num2', 'Num3']
 
 
 def my_background_rule(index):
@@ -574,11 +554,13 @@ def my_foreground_rule(index):
         return QColor(Qt.GlobalColor.white)
 
 main_window = QMainWindow()
+print("Generating Table...")
 my_table = SmartTable(data=data, headers=headers, page_size=5, parent=main_window)
+print("Enabling Features...")
 my_table.enableFiltering(True)
 my_table.enableSorting(True)
 my_table.enableEdit()
-my_table.enableEdit("Email")
+#my_table.enableEdit("Num3")
 my_table.enableSizeToData()
 my_table.setBackgroundRoleFunction(my_background_rule)
 my_table.setForegroundRoleFunction(my_foreground_rule)
