@@ -4,11 +4,12 @@
 
 import re as re
 from PyQt6.QtCore import Qt, QAbstractTableModel, QSortFilterProxyModel, QPoint,QTimer,QModelIndex
-from PyQt6.QtWidgets import QApplication, QMainWindow, QTableView, QHeaderView, QLineEdit, QItemDelegate, QWidget
+from PyQt6.QtWidgets import QApplication, QMainWindow, QTableView, QHeaderView, QLineEdit, QItemDelegate, QWidget, QLabel, QGroupBox, QVBoxLayout
 from PyQt6.QtGui import QColor
 from functools import partial
 from collections import UserList, defaultdict
 import random
+import functools
 
 # Override the default header in a table so that I can add filter boxes below the columns.
 class SmartHeader(QHeaderView):
@@ -111,9 +112,39 @@ class SmartFilterProxy(QSortFilterProxyModel):
         self.is_or = re.compile("^.+\|\|")
         self.is_not = re.compile("^!(.+)")
  
-    # I will have to override this because numeric sorting doesn't really work
-    def sort(self, column: int, order):
-        return super().sort(column, order)
+
+    def custom_sort(self, item1, item2, sort_column):
+        value1 = item1[sort_column]
+        value2 = item2[sort_column]
+        try:
+            float1 = float(value1)
+            float2 = float(value2)
+            return float1-float2
+        except:
+            return value1<value2
+
+    def key_func(self, sort_column):
+        return functools.cmp_to_key(lambda item1, item2: self.custom_sort(item1, item2, sort_column))
+
+    
+    def sort(self, column, order):
+    #    # Get the data in the specified column from the source model
+        source_column = self.mapToSource(self.index(0, column)).column()
+        data = self.sourceModel().unpaged_data
+
+        #data_sorted = sorted(data, key=lambda row: row[source_column])
+        data_sorted = sorted(data, key=self.key_func(source_column))
+        #print(data_sorted)
+
+    #    # Apply the sort order (ascending or descending)
+        if order == Qt.SortOrder.DescendingOrder:
+            data_sorted.reverse()
+
+        self.sourceModel().unpaged_data = data_sorted
+        self.sourceModel().updateView()
+
+    #    # Notify the view that the data has changed
+        self.layoutChanged.emit()
 
     def connectTextToFilter(self, table_header):
         # Store the table header
@@ -291,12 +322,30 @@ class SmartTable():
 
         # Make a new QTableView
         self.table_view = SmartTableView()
+
+        self.container_widget = QGroupBox(parent=parent)
+        self.container_layout = QVBoxLayout()
+        self.container_widget.setLayout(self.container_layout)
+        self.container_layout.addWidget(self.table_view)
+
         # make a table model
-        self.table_model = SmartTableModel(data, headers, page_size=page_size, parent=parent)
+        self.table_model = SmartTableModel(data, headers, page_size=page_size, parent=self.container_widget)
+        self.table_model.smart_table = self
         self.table_view.setModel(self.table_model)
         self.table_model.setTableView(self.table_view)
         self.proxy_model = None
         self.filter_header = None
+        self.count_label = None
+
+    def enableRowCount(self, switch:bool=True):
+        if switch is True:
+            self.count_label = QLabel()
+            self.container_layout.addWidget(self.count_label)
+            self.updateRowCountLabel()
+    
+    def updateRowCountLabel(self):
+        if self.count_label is not None:
+            self.count_label.setText(f"Row Count: {len(self.table_model.unpaged_data)}")
 
     def enableSorting(self, switch:bool=True):
         if switch is True:
@@ -345,7 +394,7 @@ class SmartTable():
                 self.table_view.setItemDelegateForColumn(column_index, edit_box)
 
     def getWidget(self):
-        return self.table_view
+        return self.container_widget
     
     def enableSizeToData(self, switch=True):
         if switch is True:
@@ -375,6 +424,7 @@ class SmartTableModel(QAbstractTableModel):
         self.original_data = self._data
         self.editable_columns = [False] * len(self._headers)
         self.table_view = None
+        self.smart_table = None
 
         # Set the page size and the initial size of the first page load.
         self.page_size = page_size
@@ -408,6 +458,7 @@ class SmartTableModel(QAbstractTableModel):
         column = index.column()
 
         if role == Qt.ItemDataRole.DisplayRole:
+            #print(self._data[row])
             return str(self._data[row][column])
 
         if role == Qt.ItemDataRole.BackgroundRole:
@@ -451,6 +502,8 @@ class SmartTableModel(QAbstractTableModel):
 
         # By how much as the row size changed
         new_row_difference = new_view_size - self.view_size
+
+        self.smart_table.updateRowCountLabel()
 
         # If rows have been removed, handle it here
         if new_row_difference < 0:
@@ -527,7 +580,7 @@ app = QApplication([])
 
 print("Loading Data...")
 data = []
-for i in range(1,1000000):
+for i in range(1,1000):
     random1 = random.randrange(-100, 101)
     random2 = random.randrange(-100, 101)
     random3 = random.randrange(-100, 101)
@@ -562,6 +615,7 @@ my_table.enableSorting(True)
 my_table.enableEdit()
 #my_table.enableEdit("Num3")
 my_table.enableSizeToData()
+my_table.enableRowCount(True)
 my_table.setBackgroundRoleFunction(my_background_rule)
 my_table.setForegroundRoleFunction(my_foreground_rule)
 main_window.setCentralWidget(my_table.getWidget())
