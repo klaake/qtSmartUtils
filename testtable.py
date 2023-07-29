@@ -3,9 +3,10 @@
 "exec" "$DIR/venv/bin/python3" "$0" "$@"
 
 import re as re
+import sys
 from PyQt6.QtCore import Qt, QAbstractTableModel, QSortFilterProxyModel, QPoint,QTimer,QModelIndex
-from PyQt6.QtWidgets import QApplication, QMainWindow, QTableView, QHeaderView, QLineEdit, QItemDelegate, QWidget, QLabel, QGroupBox, QVBoxLayout
-from PyQt6.QtGui import QColor
+from PyQt6.QtWidgets import QApplication, QMainWindow, QTableView, QHeaderView, QLineEdit, QItemDelegate, QWidget, QLabel, QGroupBox, QGridLayout, QToolBar
+from PyQt6.QtGui import QColor, QAction, QIcon
 from functools import partial
 from collections import UserList, defaultdict
 import random
@@ -324,9 +325,9 @@ class SmartTable():
         self.table_view = SmartTableView()
 
         self.container_widget = QGroupBox(parent=parent)
-        self.container_layout = QVBoxLayout()
+        self.container_layout = QGridLayout()
         self.container_widget.setLayout(self.container_layout)
-        self.container_layout.addWidget(self.table_view)
+        self.container_layout.addWidget(self.table_view,2,1)
 
         # make a table model
         self.table_model = SmartTableModel(data, headers, page_size=page_size, parent=self.container_widget)
@@ -336,12 +337,37 @@ class SmartTable():
         self.proxy_model = None
         self.filter_header = None
         self.count_label = None
+        self.value_label = None
+        self.tool_bar = None
 
+    # This function places a text label at the bottom of the table, and displays the current number
+    #  of rows being displayed.
     def enableRowCount(self, switch:bool=True):
         if switch is True:
             self.count_label = QLabel()
-            self.container_layout.addWidget(self.count_label)
+            self.container_layout.addWidget(self.count_label,3,1)
             self.updateRowCountLabel()
+
+    # This function will display the current cell value in a label below the table.
+    def enableValueLabel(self, switch:bool=True):
+        if switch is True:
+            self.value_label = QLabel()
+            self.container_layout.addWidget(self.value_label,4,1)
+            # selectionChanged is a slot I can use to determine when the cell selection changes, by any means.
+            # when it's called, use the updateValueLabel function to get the value and update the label.
+            self.table_view.selectionModel().selectionChanged.connect(self.updateValueLabel)
+
+    # This function will update the value label when the cell selection changes.
+    #  It uses the selectionModel to get the selected indexes, and always grabs the upper left in a 
+    #  multi-cell selection.  It then gets the data from the cell and updates the label.
+    def updateValueLabel(self):
+        selected_indexes = self.table_view.selectedIndexes()
+        if selected_indexes:
+            current_index = selected_indexes[0]
+            row = current_index.row()
+            col = current_index.column()
+            value = str(self.table_model._data[row][col])
+            self.value_label.setText(value)
     
     def updateRowCountLabel(self):
         if self.count_label is not None:
@@ -394,15 +420,65 @@ class SmartTable():
                 self.table_view.setItemDelegateForColumn(column_index, edit_box)
 
     def getWidget(self):
+        """
+        This function will return the group box where the table and other stuff associated with the table
+        lives.  This way, things are sort of self contained as one convenient widget that can be added to 
+        any parent view.
+
+        Returns:
+            QWidget: A QGroupBox Widget containing all the items associated with the table.
+        """
         return self.container_widget
     
     def enableSizeToData(self, switch=True):
+        """
+        This function simply allows the view to resize the cells to the size of the contexts, up to a limit
+
+        Args:
+            switch (bool, optional): Enable or disable the auto-sizing feature. Defaults to True.
+        """
         if switch is True:
             self.table_view.size_to_data = True
             self.table_view.resizeToData()
         else:
             self.table_view.size_to_data = False
         
+    def enableToolbar(self, switch=True):
+        if switch is True:
+            self.tool_bar = SmartToolbar(self)
+            self.container_layout.addWidget(self.tool_bar,1,1)
+
+class SmartToolbar(QToolBar):
+    def __init__(self, parent_table:SmartTable):
+        super().__init__()
+        # Set the styling
+        self.setStyleSheet("""
+                            SmartToolbar {
+                              background-color: #858585; 
+                              border: 2px inset grey;
+                              border-radius: 5px;
+                            }
+                            QToolBar QToolButton {
+                              padding: 0px;
+                            }
+                            """)
+        
+        # This will store all the actions
+        self.actions = defaultdict(lambda: None)
+        self.parent_table = parent_table
+
+        self.actions['clear_filters'] = QAction(parent_table.getWidget())
+        self.actions['clear_filters'].setText("Clear Table Filters")
+        self.actions['clear_filters'].setIcon(QIcon(f"{sys.path[0]}/icons/clear.png"))
+        self.addAction(self.actions['clear_filters'])
+        self.actions['clear_filters'].triggered.connect(self.clearFilters)
+
+    def clearFilters(self):
+        # Get the filter boxes if they exist...
+        filter_boxes = self.parent_table.filter_header.filter_boxes
+        for box in filter_boxes:
+            box.setText(None)
+
 
 class textEditDelegate(QItemDelegate):
     def __init__(self, parent=None):
@@ -580,7 +656,7 @@ app = QApplication([])
 
 print("Loading Data...")
 data = []
-for i in range(1,1000):
+for i in range(1,1001):
     random1 = random.randrange(-100, 101)
     random2 = random.randrange(-100, 101)
     random3 = random.randrange(-100, 101)
@@ -608,7 +684,7 @@ def my_foreground_rule(index):
 
 main_window = QMainWindow()
 print("Generating Table...")
-my_table = SmartTable(data=data, headers=headers, page_size=5, parent=main_window)
+my_table = SmartTable(data=data, headers=headers, page_size=100, parent=main_window)
 print("Enabling Features...")
 my_table.enableFiltering(True)
 my_table.enableSorting(True)
@@ -616,6 +692,8 @@ my_table.enableEdit()
 #my_table.enableEdit("Num3")
 my_table.enableSizeToData()
 my_table.enableRowCount(True)
+my_table.enableValueLabel(True)
+my_table.enableToolbar(True)
 my_table.setBackgroundRoleFunction(my_background_rule)
 my_table.setForegroundRoleFunction(my_foreground_rule)
 main_window.setCentralWidget(my_table.getWidget())
