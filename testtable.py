@@ -5,7 +5,7 @@
 import re as re
 import sys
 from PyQt6.QtCore import Qt, QAbstractTableModel, QSortFilterProxyModel, QPoint,QTimer,QModelIndex
-from PyQt6.QtWidgets import QApplication, QMainWindow, QTableView, QHeaderView, QLineEdit, QItemDelegate, QWidget, QLabel, QGroupBox, QGridLayout, QToolBar
+from PyQt6.QtWidgets import QApplication, QMainWindow, QTableView, QHeaderView, QLineEdit, QItemDelegate, QWidget, QLabel, QGroupBox, QGridLayout, QToolBar, QVBoxLayout
 from PyQt6.QtGui import QColor, QAction, QIcon
 from functools import partial
 from collections import UserList, defaultdict
@@ -183,6 +183,9 @@ class SmartFilterProxy(QSortFilterProxyModel):
         text = text.replace(']', '\]')
         filter_box.regex = text
         self.applyFilters()
+        self.sourceModel().updateView()
+        # Notify the view that the data has changed
+        self.layoutChanged.emit()
 
     def applyFilters(self):
         # Get my parent model
@@ -218,9 +221,6 @@ class SmartFilterProxy(QSortFilterProxyModel):
         #print(filtered_data)
         parent_table_model.unpaged_data = filtered_data
                 
-        # Tell the table model to update the view
-        parent_table_model.updateView()
-
     # This is where we try to apply the filter to the actual text in the box...
     def filterMatched(self, regex, column_value):
 
@@ -330,8 +330,7 @@ class SmartTable():
         self.container_layout.addWidget(self.table_view,2,1)
 
         # make a table model
-        self.table_model = SmartTableModel(data, headers, page_size=page_size, parent=self.container_widget)
-        self.table_model.smart_table = self
+        self.table_model = SmartTableModel(data, headers, page_size=page_size, parent=self.container_widget, smart_table=self)
         self.table_view.setModel(self.table_model)
         self.table_model.setTableView(self.table_view)
         self.proxy_model = None
@@ -388,6 +387,14 @@ class SmartTable():
             self.proxy_model.setDynamicSortFilter(False)
             self.table_view.setSortingEnabled(False)
 
+    def toggleColumnHidden(self, column_name:str, switch:bool=True):
+        # from the column name, get the index of the column
+        try:
+            column_number = self.table_model._headers.index(column_name)
+            self.table_view.setColumnHidden(column_number, switch)
+        except:
+            pass
+        
     # Override the default display rules...
     def setBackgroundRoleFunction(self, function):
         self.table_model.background_role_function = function
@@ -448,6 +455,10 @@ class SmartTable():
             self.tool_bar = SmartToolbar(self)
             self.container_layout.addWidget(self.tool_bar,1,1)
 
+    def __update_cell(self, row, col):
+        index_to_udpate = self.table_model.index(row, col)
+        self.table_model.dataChanged.emit(index_to_udpate, index_to_udpate)
+
 class SmartToolbar(QToolBar):
     def __init__(self, parent_table:SmartTable):
         super().__init__()
@@ -492,15 +503,23 @@ class textEditDelegate(QItemDelegate):
         model.setData(index, text_box_value, Qt.ItemDataRole.EditRole)
     
 class SmartTableModel(QAbstractTableModel):
-    def __init__(self, data, headers, page_size=100, parent=None):
+    def __init__(self, data, headers, page_size=100, parent=None, smart_table:SmartTable=None):
         super().__init__(parent)
-        self._data = [SmartRow(sublist) for sublist in data]
+        # Convert the 2nd order list into a smart row, and store what table it belongs to...
+        self._data = []
+        for row, sublist in enumerate(data):
+            if isinstance(sublist, SmartRow) is False:
+                smart_row = SmartRow(sublist)
+                data[row] = smart_row
+            data[row].smart_tables.append(smart_table)
+            self._data.append(data[row])
+
         self.unpaged_data = self._data
         self._headers = headers
         self.original_data = self._data
         self.editable_columns = [False] * len(self._headers)
         self.table_view = None
-        self.smart_table = None
+        self.smart_table = smart_table
 
         # Set the page size and the initial size of the first page load.
         self.page_size = page_size
@@ -637,16 +656,24 @@ class SmartRow(UserList):
         # Create a shadow list that will store formulas, but not the actual value
         self.formulas = [None] * len(data)
 
-        # Store a dictionary where the key = a pointer to the SmartTable and the Value is an row in that table.
-        #  this is used if the SmartRow is being used in more than one table.  If I update one, I need to update
-        #  them all.
-        self.table_rows = defaultdict(lambda: None)
+        # Store a list of all the smart tables this row exists in.  Then, when I update one cell I can update all the cells in the views...
+        self.smart_tables = []
 
         super().__init__(data)
 
     def __setitem__(self, index, value):
         #print(f"Setting Value {value} at index {index}")
         super().__setitem__(index, value)
+        # Now that the data is set, update the views of all the tables.
+        for main_table in self.smart_tables:
+            # Find the row that this row lives in...
+            try:
+                table_row = main_table.table_model._data.index(self)
+                index_to_change = main_table.table_model.index(table_row, index)
+                main_table.table_model.dataChanged.emit(index_to_change, index_to_change)
+                #print(f"Updating Position: {table_row},{index}")
+            except:
+                continue
 
     def append(self, value):
         self.formulas.append(None)
@@ -683,6 +710,10 @@ def my_foreground_rule(index):
         return QColor(Qt.GlobalColor.white)
 
 main_window = QMainWindow()
+main_widget = QWidget(main_window)
+main_widget_layout = QVBoxLayout()
+main_widget.setLayout(main_widget_layout)
+
 print("Generating Table...")
 my_table = SmartTable(data=data, headers=headers, page_size=100, parent=main_window)
 print("Enabling Features...")
@@ -694,9 +725,28 @@ my_table.enableSizeToData()
 my_table.enableRowCount(True)
 my_table.enableValueLabel(True)
 my_table.enableToolbar(True)
+#my_table.toggleColumnHidden("Num2")
 my_table.setBackgroundRoleFunction(my_background_rule)
 my_table.setForegroundRoleFunction(my_foreground_rule)
-main_window.setCentralWidget(my_table.getWidget())
+main_widget_layout.addWidget(my_table.getWidget())
+
+
+my_other_table = SmartTable(data=data, headers=headers, page_size=100, parent=main_window)
+print("Enabling Features...")
+my_other_table.enableFiltering(True)
+my_other_table.enableSorting(True)
+my_other_table.enableEdit()
+#my_other_table.enableEdit("Num3")
+my_other_table.enableSizeToData()
+my_other_table.enableRowCount(True)
+my_other_table.enableValueLabel(True)
+my_other_table.enableToolbar(True)
+#my_other_table.toggleColumnHidden("Num2")
+my_other_table.setBackgroundRoleFunction(my_background_rule)
+my_other_table.setForegroundRoleFunction(my_foreground_rule)
+main_widget_layout.addWidget(my_other_table.getWidget())
+
+main_window.setCentralWidget(main_widget)
 main_window.resize(700, 500)
 main_window.show()
 
