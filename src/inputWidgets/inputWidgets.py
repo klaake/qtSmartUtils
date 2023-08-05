@@ -1,7 +1,3 @@
-#!/bin/sh
-"export" "DIR=$(dirname $0)"
-"exec" "$DIR/venv/bin/python3" "$0" "$@"
-
 import sys
 from abc import ABC, abstractmethod
 import typing
